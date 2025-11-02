@@ -1,6 +1,6 @@
 name: 'Kubernetes Wait'
-description: 'Wait for Kubernetes workloads to become ready. Delegates Rollout waits to KoalaOps/argo-rollouts-wait@v1.'
-author: 'KoalaOps'
+description: 'Wait for Kubernetes workloads to become ready. Delegates Rollout waits to skyhook-io/argo-rollouts-wait@v1.'
+author: 'Skyhook'
 
 branding:
   icon: 'clock'
@@ -65,7 +65,7 @@ runs:
       if: ${{ fromJSON(steps.norm.outputs.rollouts_count) > 1 }}
       shell: bash
       run: |
-        echo "::error::Multiple Rollouts found. To avoid duplication, call KoalaOps/wait-for-rollout@v1 once per rollout (matrix or sequential)."
+        echo "::error::Multiple Rollouts found. To avoid duplication, call skyhook-io/wait-for-rollout@v1 once per rollout (matrix or sequential)."
         echo "Rollouts detected:"
         echo '${{ steps.norm.outputs.rollouts_json }}' | jq -r '.[] | "  - \(.name) (ns: \(.namespace // "'${{ steps.norm.outputs.namespace }}'"))"'
         exit 1
@@ -73,7 +73,7 @@ runs:
     # Delegate exactly one Rollout to the Argo action
     - name: Wait for Argo Rollout
       if: ${{ fromJSON(steps.norm.outputs.rollouts_count) == 1 }}
-      uses: KoalaOps/wait-for-rollout@v1
+      uses: skyhook-io/wait-for-rollout@v1
       with:
         rollout_name: ${{ steps.norm.outputs.first_rollout_name }}
         namespace: ${{ steps.norm.outputs.first_rollout_ns || steps.norm.outputs.namespace }}

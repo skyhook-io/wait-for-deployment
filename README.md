@@ -14,7 +14,7 @@ Waits for Kubernetes workloads to become ready with automatic Argo Rollout deleg
 
 ```yaml
 - name: Wait for deployments
-  uses: KoalaOps/wait-for-deployment@v1
+  uses: skyhook-io/wait-for-deployment@v1
   with:
     namespace: production
     workloads_json: '[{"kind":"Deployment","name":"api"},{"kind":"StatefulSet","name":"db"}]'
@@ -46,7 +46,7 @@ Waits for Kubernetes workloads to become ready with automatic Argo Rollout deleg
   run: kubectl apply -f manifests/
 
 - name: Wait for deployment
-  uses: KoalaOps/wait-for-deployment@v1
+  uses: skyhook-io/wait-for-deployment@v1
   with:
     namespace: production
     workloads_json: '[{"kind":"Deployment","name":"frontend"}]'
@@ -55,7 +55,7 @@ Waits for Kubernetes workloads to become ready with automatic Argo Rollout deleg
 ### Multiple Workloads
 ```yaml
 - name: Wait for all services
-  uses: KoalaOps/wait-for-deployment@v1
+  uses: skyhook-io/wait-for-deployment@v1
   with:
     namespace: default
     workloads_json: |
@@ -71,12 +71,12 @@ Waits for Kubernetes workloads to become ready with automatic Argo Rollout deleg
 ```yaml
 - name: Inspect manifests
   id: inspect
-  uses: KoalaOps/kustomize-inspect@v1
+  uses: skyhook-io/kustomize-inspect@v1
   with:
     overlay_path: overlays/production
 
 - name: Wait for workloads
-  uses: KoalaOps/wait-for-deployment@v1
+  uses: skyhook-io/wait-for-deployment@v1
   with:
     namespace: production
     workloads_json: ${{ steps.inspect.outputs.workloads }}
@@ -85,7 +85,7 @@ Waits for Kubernetes workloads to become ready with automatic Argo Rollout deleg
 ### Mixed Standard and Rollout Workloads
 ```yaml
 - name: Wait for mixed workloads
-  uses: KoalaOps/wait-for-deployment@v1
+  uses: skyhook-io/wait-for-deployment@v1
   with:
     namespace: production
     workloads_json: |
@@ -99,7 +99,7 @@ Waits for Kubernetes workloads to become ready with automatic Argo Rollout deleg
 ### With Custom Namespaces
 ```yaml
 - name: Wait across namespaces
-  uses: KoalaOps/wait-for-deployment@v1
+  uses: skyhook-io/wait-for-deployment@v1
   with:
     namespace: default  # Fallback for workloads without namespace
     workloads_json: |
@@ -121,7 +121,7 @@ Waits for Kubernetes workloads to become ready with automatic Argo Rollout deleg
 ## Rollout Delegation
 
 When a Rollout is detected in the workload list:
-- Automatically delegates to `KoalaOps/wait-for-rollout@v1`
+- Automatically delegates to `skyhook-io/wait-for-rollout@v1`
 - Passes through timeout and verify_only parameters
 - Supports only one Rollout per action invocation (use matrix for multiple)
 
@@ -145,7 +145,7 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Setup kubectl
-        uses: KoalaOps/cloud-login@v1
+        uses: skyhook-io/cloud-login@v1
         with:
           provider: aws
           region: us-east-1
@@ -159,12 +159,12 @@ jobs:
       
       - name: Get workloads
         id: inspect
-        uses: KoalaOps/kustomize-inspect@v1
+        uses: skyhook-io/kustomize-inspect@v1
         with:
           overlay_path: overlays/production
       
       - name: Wait for all workloads
-        uses: KoalaOps/wait-for-deployment@v1
+        uses: skyhook-io/wait-for-deployment@v1
         with:
           namespace: production
           workloads_json: ${{ steps.inspect.outputs.workloads }}
