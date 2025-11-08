@@ -1,4 +1,4 @@
-name: 'Kubernetes Wait'
+name: 'Skyhook Kubernetes Wait'
 description: 'Wait for Kubernetes workloads to become ready. Delegates Rollout waits to skyhook-io/argo-rollouts-wait@v1.'
 author: 'Skyhook'
 
