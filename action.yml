@@ -25,6 +25,18 @@ inputs:
     description: 'Pass-through to Argo Rollouts Wait when delegating (health check only)'
     required: false
     default: 'false'
+  wait_for_deployment_id:
+    description: 'Enable waiting for deployment-id annotation before rollout status (for async deploys like ArgoCD)'
+    required: false
+    default: 'false'
+  expected_deployment_id:
+    description: 'Wait until workload has this deployment-id annotation. Defaults to current GitHub run ID.'
+    required: false
+    default: ${{ github.run_id }}
+  annotation_timeout:
+    description: 'Timeout for waiting for deployment-id annotation (e.g., 300s, 5m).'
+    required: false
+    default: '300s'
 
 runs:
   using: 'composite'
@@ -70,6 +82,97 @@ runs:
         echo '${{ steps.norm.outputs.rollouts_json }}' | jq -r '.[] | "  - \(.name) (ns: \(.namespace // "'${{ steps.norm.outputs.namespace }}'"))"'
         exit 1
 
+    - name: Validate deployment-id inputs
+      if: ${{ inputs.wait_for_deployment_id == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        EXPECTED_ID='${{ inputs.expected_deployment_id }}'
+        if [ -z "$EXPECTED_ID" ]; then
+          echo "::error::wait_for_deployment_id is true but expected_deployment_id is empty"
+          exit 1
+        fi
+        echo "✓ Will wait for deployment-id=$EXPECTED_ID"
+
+    # Wait for deployment-id annotation on ALL workloads (for async deploys like ArgoCD)
+    - name: Wait for deployment-id annotation
+      if: ${{ inputs.wait_for_deployment_id == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        NS='${{ steps.norm.outputs.namespace }}'
+        EXPECTED_ID='${{ inputs.expected_deployment_id }}'
+        TIMEOUT='${{ inputs.annotation_timeout }}'
+        ALL_JSON='${{ inputs.workloads_json }}'
+
+        # Parse timeout to seconds
+        if [[ "$TIMEOUT" =~ ^([0-9]+)s$ ]]; then
+          TIMEOUT_SECS="${BASH_REMATCH[1]}"
+        elif [[ "$TIMEOUT" =~ ^([0-9]+)m$ ]]; then
+          TIMEOUT_SECS=$((${BASH_REMATCH[1]} * 60))
+        else
+          TIMEOUT_SECS=300
+        fi
+
+        echo "⏳ Waiting for deployment-id=$EXPECTED_ID on all workloads (timeout=${TIMEOUT_SECS}s)"
+
+        # Get annotation path based on workload kind
+        get_annotation_path() {
+          local kind="$1"
+          case "$kind" in
+            Deployment|StatefulSet|DaemonSet)
+              # Pod template annotation
+              echo '.spec.template.metadata.annotations["deployment-id"]'
+              ;;
+            Rollout)
+              # Argo Rollout uses same structure as Deployment
+              echo '.spec.template.metadata.annotations["deployment-id"]'
+              ;;
+            *)
+              # Direct metadata annotation for other resources
+              echo '.metadata.annotations["deployment-id"]'
+              ;;
+          esac
+        }
+
+        wait_for_annotation() {
+          local kind="$1" name="$2" ns="$3"
+          local start_time=$(date +%s)
+          local current_id=""
+          local jsonpath=$(get_annotation_path "$kind")
+
+          # Convert kind to API resource name
+          local resource=$(echo "$kind" | tr '[:upper:]' '[:lower:]')
+
+          while true; do
+            current_id=$(kubectl get "$resource" "$name" -n "$ns" -o jsonpath="{$jsonpath}" 2>/dev/null || echo "")
+
+            if [ "$current_id" = "$EXPECTED_ID" ]; then
+              echo "  ✓ $kind/$name has deployment-id=$EXPECTED_ID"
+              return 0
+            fi
+
+            elapsed=$(($(date +%s) - start_time))
+            if [ $elapsed -ge $TIMEOUT_SECS ]; then
+              echo "::error::Timeout waiting for $kind/$name to have deployment-id=$EXPECTED_ID (current: ${current_id:-<not set>})"
+              exit 1
+            fi
+
+            echo "  ⏳ $kind/$name has deployment-id=${current_id:-<not set>}, waiting... (${elapsed}s elapsed)"
+            sleep 5
+          done
+        }
+
+        # Process all workloads from the JSON
+        echo "$ALL_JSON" | jq -r '.[] | "\(.kind)\t\(.name)\t\(.namespace // "")"' | \
+        while IFS=$'\t' read -r kind name ns; do
+          [ -z "$kind" ] && continue
+          resolved_ns="${ns:-$NS}"
+          wait_for_annotation "$kind" "$name" "$resolved_ns"
+        done
+
+        echo "✅ All workloads have deployment-id=$EXPECTED_ID"
+
     # Delegate exactly one Rollout to the Argo action
     - name: Wait for Argo Rollout
       if: ${{ fromJSON(steps.norm.outputs.rollouts_count) == 1 }}
@@ -110,7 +213,7 @@ runs:
           [ -z "$name" ] && continue
           echo "  - DaemonSet/$name (ns: $ns)"
           kubectl rollout status "daemonset/$name" -n "$ns" --timeout "$TIMEOUT" || true
-        done
+        done < <(extract "DaemonSet")
 
         echo "✅ Standard workloads are ready."
 
