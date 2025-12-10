@@ -30,6 +30,9 @@ Waits for Kubernetes workloads to become ready with automatic Argo Rollout deleg
 | `timeout` | Wait timeout (e.g., 300s, 5m) | ❌ | `300s` |
 | `show_status` | Show kubectl status after waiting | ❌ | `true` |
 | `verify_only` | Pass-through for Rollout verification | ❌ | `false` |
+| `wait_for_deployment_id` | Wait for `deployment-id` annotation before checking rollout status | ❌ | `false` |
+| `expected_deployment_id` | Expected `deployment-id` annotation value | ❌ | `github.run_id` |
+| `annotation_timeout` | Timeout for annotation wait (e.g., 300s, 5m) | ❌ | `300s` |
 
 ## Supported Workload Types
 
@@ -110,13 +113,46 @@ Waits for Kubernetes workloads to become ready with automatic Argo Rollout deleg
       ]
 ```
 
+### ArgoCD Async Deployments
+
+When deploying via ArgoCD (or other async GitOps tools), the workload may not be updated immediately after triggering a sync. Use `wait_for_deployment_id` to wait for the correct version before checking rollout status:
+
+```yaml
+- name: Trigger ArgoCD sync
+  run: argocd app sync my-app --async
+
+- name: Wait for deployment
+  uses: skyhook-io/wait-for-deployment@v1
+  with:
+    namespace: production
+    workloads_json: ${{ steps.inspect.outputs.workloads }}
+    wait_for_deployment_id: 'true'  # Waits for deployment-id annotation
+    # expected_deployment_id defaults to github.run_id
+```
+
+This requires your manifests to include a `deployment-id` annotation (typically set via kustomize):
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    deployment-id: "12345678"  # Set to github.run_id
+spec:
+  template:
+    metadata:
+      annotations:
+        deployment-id: "12345678"  # Also on pod template
+```
+
 ## How It Works
 
 1. **Parses workload list** - Processes the JSON array of workloads
 2. **Separates by type** - Identifies standard K8s workloads vs Argo Rollouts
-3. **Delegates Rollouts** - Automatically uses `wait-for-rollout@v1` for Rollout resources
-4. **Waits for standard workloads** - Uses `kubectl rollout status` for Deployments, StatefulSets, DaemonSets
-5. **Reports status** - Shows final status for all workloads
+3. **Waits for annotation** (if enabled) - Polls until `deployment-id` annotation matches expected value
+4. **Delegates Rollouts** - Automatically uses `wait-for-rollout@v1` for Rollout resources
+5. **Waits for standard workloads** - Uses `kubectl rollout status` for Deployments, StatefulSets, DaemonSets
+6. **Reports status** - Shows final status for all workloads
 
 ## Rollout Delegation
 
