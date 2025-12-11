@@ -167,6 +167,12 @@ runs:
         done
 
         echo "✅ All workloads have deployment-id=$EXPECTED_ID"
+        
+        # Give Kubernetes time to pick up the changes and start the rollout
+        # After the deployment-id annotation appears, Kubernetes needs a moment
+        # to process the update before kubectl rollout status can detect it
+        echo "⏳ Waiting 5s for Kubernetes to process the changes..."
+        sleep 5
 
     # Delegate exactly one Rollout to the Argo action
     - name: Wait for Argo Rollout
