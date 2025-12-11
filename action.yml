@@ -60,14 +60,23 @@ runs:
 
         ROLLOUTS_JSON=$(echo "$JSON" | jq -c '[ .[] | select((.kind // "") == "Rollout") ]')
         NON_ROLLOUTS_JSON=$(echo "$JSON" | jq -c '[ .[] | select((.kind // "") != "Rollout") ]')
-        COUNT=$(jq 'length' <<<"$ROLLOUTS_JSON")
+        COUNT=$(jq -r 'length' <<<"$ROLLOUTS_JSON" || echo "0")
+        NON_ROLLOUTS_COUNT=$(jq -r 'length' <<<"$NON_ROLLOUTS_JSON" || echo "0")
         FIRST_NAME=$(jq -r '.[0].name // ""' <<<"$ROLLOUTS_JSON")
         FIRST_NS=$(jq -r '.[0].namespace // ""' <<<"$ROLLOUTS_JSON")
+
+        echo "ROLLOUTS_JSON=$ROLLOUTS_JSON"
+        echo "NON_ROLLOUTS_JSON=$NON_ROLLOUTS_JSON"
+        echo "rollouts_count=$COUNT"
+        echo "non_rollouts_count=$NON_ROLLOUTS_COUNT"
+        echo "first_rollout_name=$FIRST_NAME"
+        echo "first_rollout_ns=$FIRST_NS"
 
         echo "namespace=$NS"                        >> "$GITHUB_OUTPUT"
         echo "rollouts_json=$ROLLOUTS_JSON"         >> "$GITHUB_OUTPUT"
         echo "non_rollouts_json=$NON_ROLLOUTS_JSON"  >> "$GITHUB_OUTPUT"
         echo "rollouts_count=$COUNT"                >> "$GITHUB_OUTPUT"
+        echo "non_rollouts_count=$NON_ROLLOUTS_COUNT" >> "$GITHUB_OUTPUT"
         echo "first_rollout_name=$FIRST_NAME"       >> "$GITHUB_OUTPUT"
         echo "first_rollout_ns=$FIRST_NS"           >> "$GITHUB_OUTPUT"
 
@@ -186,7 +195,7 @@ runs:
 
     # Wait for standard k8s workloads
     - name: Wait for standard workloads
-      if: ${{ fromJSON(steps.norm.outputs.non_rollouts_json).length > 0 }}
+      if: steps.norm.outputs.non_rollouts_count != '0'
       shell: bash
       run: |
         set -euo pipefail
