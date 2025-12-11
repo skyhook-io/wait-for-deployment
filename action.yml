@@ -167,8 +167,11 @@ runs:
         done
 
         echo "✅ All workloads have deployment-id=$EXPECTED_ID"
+        echo "⏳ Annotation wait complete. Proceeding to wait for rollout completion..."
 
     # Delegate exactly one Rollout to the Argo action
+    # This step ALWAYS runs when there's a Rollout, regardless of wait_for_deployment_id
+    # When wait_for_deployment_id is true, it runs AFTER the annotation wait completes
     - name: Wait for Argo Rollout
       if: ${{ fromJSON(steps.norm.outputs.rollouts_count) == 1 }}
       uses: skyhook-io/wait-for-rollout@v1
@@ -179,6 +182,8 @@ runs:
         verify_only: ${{ inputs.verify_only }}
 
     # Wait for standard k8s workloads
+    # This step runs for all non-Rollout workloads
+    # When wait_for_deployment_id is true, it runs AFTER the annotation wait completes
     - name: Wait for standard workloads
       if: ${{ fromJSON(steps.norm.outputs.non_rollouts_json).length > 0 }}
       shell: bash
@@ -190,27 +195,122 @@ runs:
 
         extract() { echo "$JSON" | jq -r --arg K "$1" '.[] | select(.kind==$K) | [.name, (.namespace // "'$NS'")] | @tsv'; }
 
-        echo "⏳ Waiting for standard workloads (timeout=$TIMEOUT)"
+        echo "⏳ Waiting for standard workloads rollout to complete (timeout=$TIMEOUT)"
 
+        # Helper function to wait for rollout to start
+        # kubectl rollout status may return immediately if no rollout is in progress,
+        # even if the Deployment spec was just updated. This function ensures we wait
+        # for Kubernetes to actually start processing the rollout.
+        wait_for_rollout_to_start() {
+          local kind="$1" name="$2" ns="$3" max_wait=60
+          local start_time=$(date +%s)
+          local resource=$(echo "$kind" | tr '[:upper:]' '[:lower:]')
+          local initial_generation=0
+          
+          echo "    Checking if $kind/$name rollout has started..."
+          
+          # Get initial state to detect changes
+          local initial_json=$(kubectl get "$resource" "$name" -n "$ns" -o json 2>/dev/null || echo "{}")
+          initial_generation=$(echo "$initial_json" | jq -r '.metadata.generation // 0')
+          
+          # First check: if rollout already finished or no change needed, return immediately
+          local first_check_json=$(kubectl get "$resource" "$name" -n "$ns" -o json 2>/dev/null || echo "{}")
+          local first_gen=$(echo "$first_check_json" | jq -r '.metadata.generation // 0')
+          local first_observed=$(echo "$first_check_json" | jq -r '.status.observedGeneration // 0')
+          local first_ready=$(echo "$first_check_json" | jq -r '.status.readyReplicas // 0')
+          local first_replicas=$(echo "$first_check_json" | jq -r '.spec.replicas // 0')
+          local first_updated=$(echo "$first_check_json" | jq -r '.status.updatedReplicas // 0')
+          
+          # If rollout is already complete (observed == generation and all replicas ready)
+          if [ "$first_observed" -eq "$first_gen" ] && [ "$first_ready" -eq "$first_replicas" ] && [ "$first_updated" -eq "$first_replicas" ]; then
+            if [ "$first_gen" -gt "$initial_generation" ]; then
+              echo "    ✓ $kind/$name rollout already completed (generation=$first_gen, ready=$first_ready/$first_replicas)"
+            else
+              echo "    ✓ $kind/$name no rollout needed (generation unchanged, ready=$first_ready/$first_replicas)"
+            fi
+            return 0
+          fi
+          
+          # If no change detected and already stable, proceed quickly
+          if [ "$first_gen" -eq "$initial_generation" ] && [ "$first_observed" -eq "$first_gen" ]; then
+            echo "    ⚠ $kind/$name no rollout detected (generation unchanged), proceeding to kubectl rollout status..."
+            return 0
+          fi
+          
+          # Otherwise, wait for rollout to start or complete
+          while true; do
+            local json=$(kubectl get "$resource" "$name" -n "$ns" -o json 2>/dev/null || echo "{}")
+            local generation=$(echo "$json" | jq -r '.metadata.generation // 0')
+            local observed_gen=$(echo "$json" | jq -r '.status.observedGeneration // 0')
+            local ready_replicas=$(echo "$json" | jq -r '.status.readyReplicas // 0')
+            local replicas=$(echo "$json" | jq -r '.spec.replicas // 0')
+            local updated_replicas=$(echo "$json" | jq -r '.status.updatedReplicas // 0')
+            
+            # Check if rollout is complete (observed == generation and all replicas match)
+            if [ "$observed_gen" -eq "$generation" ] && [ "$ready_replicas" -eq "$replicas" ] && [ "$updated_replicas" -eq "$replicas" ]; then
+              echo "    ✓ $kind/$name rollout complete (generation=$generation, ready=$ready_replicas/$replicas)"
+              return 0
+            fi
+            
+            # Check if rollout is in progress
+            if [ "$updated_replicas" -lt "$replicas" ] || [ "$ready_replicas" -lt "$replicas" ]; then
+              echo "    ✓ $kind/$name rollout in progress (updated=$updated_replicas/$replicas, ready=$ready_replicas/$replicas)"
+              return 0
+            fi
+            
+            # If observedGeneration < generation, Kubernetes hasn't processed the update yet
+            if [ "$observed_gen" -lt "$generation" ]; then
+              elapsed=$(($(date +%s) - start_time))
+              echo "    ⏳ $kind/$name rollout pending (generation=$generation, observed=$observed_gen), waiting for controller... (${elapsed}s)"
+            else
+              elapsed=$(($(date +%s) - start_time))
+              echo "    ⏳ $kind/$name status: gen=$generation, obs=$observed_gen, updated=$updated_replicas/$replicas, ready=$ready_replicas/$replicas (${elapsed}s)"
+            fi
+            
+            elapsed=$(($(date +%s) - start_time))
+            if [ $elapsed -ge $max_wait ]; then
+              echo "    ⚠ $kind/$name timeout after ${max_wait}s, proceeding to kubectl rollout status..."
+              return 0
+            fi
+            
+            sleep 2
+          done
+        }
+ 
+        # Wait for Deployments
         while IFS=$'\t' read -r name ns; do
           [ -z "$name" ] && continue
           echo "  - Deployment/$name (ns: $ns)"
-          kubectl rollout status "deployment/$name" -n "$ns" --timeout "$TIMEOUT"
+          # First, wait for rollout to start (if it hasn't already)
+          wait_for_rollout_to_start "Deployment" "$name" "$ns"
+          # Then wait for rollout to complete
+          kubectl rollout status "deployment/$name" -n "$ns" --timeout "$TIMEOUT" || {
+            echo "::error::Deployment/$name rollout failed or timed out"
+            exit 1
+          }
         done < <(extract "Deployment")
 
+        # Wait for StatefulSets
         while IFS=$'\t' read -r name ns; do
           [ -z "$name" ] && continue
           echo "  - StatefulSet/$name (ns: $ns)"
-          kubectl rollout status "statefulset/$name" -n "$ns" --timeout "$TIMEOUT" || true
+          wait_for_rollout_to_start "StatefulSet" "$name" "$ns"
+          kubectl rollout status "statefulset/$name" -n "$ns" --timeout "$TIMEOUT" || {
+            echo "::warning::StatefulSet/$name rollout failed or timed out (non-blocking)"
+          }
         done < <(extract "StatefulSet")
 
+        # Wait for DaemonSets
         while IFS=$'\t' read -r name ns; do
           [ -z "$name" ] && continue
           echo "  - DaemonSet/$name (ns: $ns)"
-          kubectl rollout status "daemonset/$name" -n "$ns" --timeout "$TIMEOUT" || true
+          wait_for_rollout_to_start "DaemonSet" "$name" "$ns"
+          kubectl rollout status "daemonset/$name" -n "$ns" --timeout "$TIMEOUT" || {
+            echo "::warning::DaemonSet/$name rollout failed or timed out (non-blocking)"
+          }
         done < <(extract "DaemonSet")
 
-        echo "✅ Standard workloads are ready."
+        echo "✅ Standard workloads rollout completed."
 
     - name: Show status
       if: inputs.show_status == 'true'
