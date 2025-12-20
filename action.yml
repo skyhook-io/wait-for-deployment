@@ -114,11 +114,13 @@ runs:
         TIMEOUT='${{ inputs.annotation_timeout }}'
         ALL_JSON='${{ inputs.workloads_json }}'
 
-        # Parse timeout to seconds
+        # Parse timeout to seconds (supports Ns, Nm, Nh)
         if [[ "$TIMEOUT" =~ ^([0-9]+)s$ ]]; then
           TIMEOUT_SECS="${BASH_REMATCH[1]}"
         elif [[ "$TIMEOUT" =~ ^([0-9]+)m$ ]]; then
           TIMEOUT_SECS=$((${BASH_REMATCH[1]} * 60))
+        elif [[ "$TIMEOUT" =~ ^([0-9]+)h$ ]]; then
+          TIMEOUT_SECS=$((${BASH_REMATCH[1]} * 3600))
         else
           TIMEOUT_SECS=300
         fi
@@ -203,11 +205,13 @@ runs:
         TIMEOUT='${{ inputs.timeout }}'
         JSON='${{ steps.norm.outputs.non_rollouts_json }}'
 
-        # Parse timeout to seconds
+        # Parse timeout to seconds (supports Ns, Nm, Nh)
         if [[ "$TIMEOUT" =~ ^([0-9]+)s$ ]]; then
           TIMEOUT_SECS="${BASH_REMATCH[1]}"
         elif [[ "$TIMEOUT" =~ ^([0-9]+)m$ ]]; then
           TIMEOUT_SECS=$((${BASH_REMATCH[1]} * 60))
+        elif [[ "$TIMEOUT" =~ ^([0-9]+)h$ ]]; then
+          TIMEOUT_SECS=$((${BASH_REMATCH[1]} * 3600))
         else
           TIMEOUT_SECS=300
         fi
