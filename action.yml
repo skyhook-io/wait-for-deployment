@@ -271,15 +271,13 @@ runs:
           # Check for pre-existing deadline exceeded condition
           if ! check_progress_deadline "$kind" "$name" "$ns"; then
             # Wait for the condition to clear (new rollout starting)
-            local attempts=0
-            while ! check_progress_deadline "$kind" "$name" "$ns" 2>/dev/null; do
+            while ! check_progress_deadline "$kind" "$name" "$ns" >/dev/null 2>&1; do
               local elapsed=$(($(date +%s) - start_time))
               if [ $elapsed -ge $TIMEOUT_SECS ]; then
                 echo "::error::$kind/$name: ProgressDeadlineExceeded condition did not clear within timeout"
                 return 1
               fi
               sleep 5
-              ((attempts++))
             done
           fi
 
