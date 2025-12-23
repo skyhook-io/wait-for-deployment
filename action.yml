@@ -114,11 +114,13 @@ runs:
         TIMEOUT='${{ inputs.annotation_timeout }}'
         ALL_JSON='${{ inputs.workloads_json }}'
 
-        # Parse timeout to seconds
+        # Parse timeout to seconds (supports Ns, Nm, Nh)
         if [[ "$TIMEOUT" =~ ^([0-9]+)s$ ]]; then
           TIMEOUT_SECS="${BASH_REMATCH[1]}"
         elif [[ "$TIMEOUT" =~ ^([0-9]+)m$ ]]; then
           TIMEOUT_SECS=$((${BASH_REMATCH[1]} * 60))
+        elif [[ "$TIMEOUT" =~ ^([0-9]+)h$ ]]; then
+          TIMEOUT_SECS=$((${BASH_REMATCH[1]} * 3600))
         else
           TIMEOUT_SECS=300
         fi
@@ -203,26 +205,108 @@ runs:
         TIMEOUT='${{ inputs.timeout }}'
         JSON='${{ steps.norm.outputs.non_rollouts_json }}'
 
+        # Parse timeout to seconds (supports Ns, Nm, Nh)
+        if [[ "$TIMEOUT" =~ ^([0-9]+)s$ ]]; then
+          TIMEOUT_SECS="${BASH_REMATCH[1]}"
+        elif [[ "$TIMEOUT" =~ ^([0-9]+)m$ ]]; then
+          TIMEOUT_SECS=$((${BASH_REMATCH[1]} * 60))
+        elif [[ "$TIMEOUT" =~ ^([0-9]+)h$ ]]; then
+          TIMEOUT_SECS=$((${BASH_REMATCH[1]} * 3600))
+        else
+          TIMEOUT_SECS=300
+        fi
+
         extract() { echo "$JSON" | jq -r --arg K "$1" '.[] | select(.kind==$K) | [.name, (.namespace // "'$NS'")] | @tsv'; }
+
+        # Wait for Kubernetes to observe the current spec generation.
+        # This ensures the controller has started processing the new deployment
+        # before we check rollout status.
+        wait_for_generation_observed() {
+          local kind="$1" name="$2" ns="$3"
+          local resource=$(echo "$kind" | tr '[:upper:]' '[:lower:]')
+          local start_time=$(date +%s)
+
+          echo "    Waiting for $kind/$name spec to be observed..."
+          while true; do
+            local json=$(kubectl get "$resource" "$name" -n "$ns" -o json 2>/dev/null)
+            local generation=$(echo "$json" | jq -r '.metadata.generation // 0')
+            local observed=$(echo "$json" | jq -r '.status.observedGeneration // 0')
+
+            if [ "$generation" = "$observed" ] && [ "$generation" != "0" ]; then
+              echo "    ✓ Generation $generation observed"
+              return 0
+            fi
+
+            local elapsed=$(($(date +%s) - start_time))
+            if [ $elapsed -ge 60 ]; then
+              echo "::warning::$kind/$name: generation not observed after 60s (gen=$generation, observed=$observed)"
+              return 0  # Continue anyway, rollout status will give the real error
+            fi
+
+            sleep 2
+          done
+        }
+
+        # Check if deployment has a stale ProgressDeadlineExceeded condition
+        check_progress_deadline() {
+          local kind="$1" name="$2" ns="$3"
+          local resource=$(echo "$kind" | tr '[:upper:]' '[:lower:]')
+
+          local condition=$(kubectl get "$resource" "$name" -n "$ns" -o json 2>/dev/null | \
+            jq -r '.status.conditions[]? | select(.type=="Progressing" and .status=="False" and .reason=="ProgressDeadlineExceeded") | .reason // empty')
+
+          if [ "$condition" = "ProgressDeadlineExceeded" ]; then
+            echo "    ⚠️  $kind/$name has pre-existing ProgressDeadlineExceeded condition"
+            echo "    ⚠️  Waiting for new rollout to clear this condition..."
+            return 1
+          fi
+          return 0
+        }
+
+        # Wait for rollout, handling pre-existing failed state
+        wait_for_rollout() {
+          local kind="$1" name="$2" ns="$3"
+          local resource=$(echo "$kind" | tr '[:upper:]' '[:lower:]')
+          local start_time=$(date +%s)
+
+          # First, ensure Kubernetes has observed the new spec
+          wait_for_generation_observed "$kind" "$name" "$ns"
+
+          # Check for pre-existing deadline exceeded condition
+          if ! check_progress_deadline "$kind" "$name" "$ns"; then
+            # Wait for the condition to clear (new rollout starting)
+            while ! check_progress_deadline "$kind" "$name" "$ns" >/dev/null 2>&1; do
+              local elapsed=$(($(date +%s) - start_time))
+              if [ $elapsed -ge $TIMEOUT_SECS ]; then
+                echo "::error::$kind/$name: ProgressDeadlineExceeded condition did not clear within timeout"
+                return 1
+              fi
+              sleep 5
+            done
+          fi
+
+          # Now wait for rollout status
+          kubectl rollout status "$resource/$name" -n "$ns" --timeout "$TIMEOUT"
+        }
 
         echo "⏳ Waiting for standard workloads (timeout=$TIMEOUT)"
 
         while IFS=$'\t' read -r name ns; do
           [ -z "$name" ] && continue
           echo "  - Deployment/$name (ns: $ns)"
-          kubectl rollout status "deployment/$name" -n "$ns" --timeout "$TIMEOUT"
+          wait_for_rollout "Deployment" "$name" "$ns"
         done < <(extract "Deployment")
 
         while IFS=$'\t' read -r name ns; do
           [ -z "$name" ] && continue
           echo "  - StatefulSet/$name (ns: $ns)"
-          kubectl rollout status "statefulset/$name" -n "$ns" --timeout "$TIMEOUT" || true
+          wait_for_rollout "StatefulSet" "$name" "$ns" || true
         done < <(extract "StatefulSet")
 
         while IFS=$'\t' read -r name ns; do
           [ -z "$name" ] && continue
           echo "  - DaemonSet/$name (ns: $ns)"
-          kubectl rollout status "daemonset/$name" -n "$ns" --timeout "$TIMEOUT" || true
+          wait_for_rollout "DaemonSet" "$name" "$ns" || true
         done < <(extract "DaemonSet")
 
         echo "✅ Standard workloads are ready."
